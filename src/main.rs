@@ -10,16 +10,15 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use num_traits::ToPrimitive;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     widgets::{Block, Borders},
     Terminal,
 };
 use rustfft::{num_complex::Complex, FftPlanner};
-
-const SAMPLE_RATE: usize = 44100; // サンプリングレート（未使用だが基準値として定義）
 const FFT_SIZE: usize = 512; // FFTのサイズ（1フレームのサンプル数）
 const SPEC_WIDTH: usize = 200; // スペクトログラムの横幅（時間方向のフレーム数）
 
@@ -106,46 +105,77 @@ fn main() -> anyhow::Result<()> {
             let size = f.size();
             let block = Block::default()
                 .borders(Borders::ALL)
-                .title("Spectrogram (press 'q' to quit)");
+                .title("Spectrogram (press 'q' to quit, log scale)");
             f.render_widget(&block, size);
             let inner = block.inner(size);
 
             let width = inner.width.min(SPEC_WIDTH as u16) as usize;
             let height = inner.height as usize;
 
-            let mut buf = vec![vec![' '; width]; height];
-            for (x, column) in spec.iter().rev().take(width).enumerate() {
-                for (y, &val) in column.iter().enumerate() {
-                    let intensity = ((val * 10.0) as u8).min(9);
-                    if y < height {
-                        buf[height - 1 - y][x] =
-                            " .:-=+*#%@".chars().nth(intensity as usize).unwrap_or(' ');
-                    }
+            // 対数スケール用パラメータ
+            // 対数スケール変換の部分
+            let f_min: f32 = 20.0;
+            let f_max: f32 = sample_rate as f32 / 2.0;
+            let log_min = f_min.log10();
+            let log_max = f_max.log10();
+
+            // 色分け関数
+            fn intensity_color(val: f32) -> Color {
+                if val < 0.3 {
+                    Color::Blue
+                } else if val < 0.4 {
+                    Color::Cyan
+                } else if val < 0.6 {
+                    Color::Green
+                } else if val < 0.8 {
+                    Color::Yellow
+                } else {
+                    Color::Red
                 }
             }
 
-            // === 周波数ラベルを生成 ===
-            // 上が高周波、下が低周波
-            let max_freq = sample_rate / 2.0; // ナイキスト周波数
-            let mut text = String::new();
-            for (i, row) in buf.iter().enumerate() {
-                let freq = max_freq * (1.0 - i as f32 / height as f32);
-                let label = if i % (height / 8).max(1) == 0 {
-                    format!("{:>5.0}Hz | ", freq)
+            // 表示テキストを構築
+            let mut lines: Vec<Line> = Vec::new();
+            for row in 0..height {
+                // 対数スケールで周波数を算出
+                let frac = 1.0 - row as f32 / height as f32;
+                let freq = 10f32.powf(log_min + frac * (log_max - log_min));
+
+                // ラベル
+                let label = if row % (height / 8).max(1) == 0 {
+                    format!("{:>6.0}Hz | ", freq)
                 } else {
-                    "        | ".to_string()
+                    "         | ".to_string()
                 };
-                text.push_str(&format!("{}{}\n", label, row.iter().collect::<String>()));
+
+                let mut spans: Vec<Span> = vec![Span::raw(label)];
+
+                // 各列（時間軸）を描画
+                for (x, column) in spec.iter().rev().take(width).enumerate() {
+                    // 対数スケール対応：rowに対応するFFTインデックス
+                    let target_freq = freq;
+                    let fft_index =
+                        ((target_freq / f_max) * (FFT_SIZE as f32 / 2.0)).round() as usize;
+                    if fft_index < column.len() {
+                        let val = column[fft_index];
+                        let intensity = ((val * 10.0) as u8).min(9);
+                        let ch = " .:-=+*#%@".chars().nth(intensity as usize).unwrap_or(' ');
+                        spans.push(Span::styled(
+                            ch.to_string(),
+                            Style::default().fg(intensity_color(val)),
+                        ));
+                    } else {
+                        spans.push(Span::raw(" "));
+                    }
+                }
+
+                lines.push(Line::from(spans));
             }
 
-            use ratatui::text::Text;
-            use ratatui::widgets::Paragraph;
-            let paragraph =
-                Paragraph::new(Text::raw(text)).style(Style::default().fg(Color::Green));
+            let paragraph = Paragraph::new(lines);
             f.render_widget(paragraph, inner);
         })?;
     }
-
     // === 終了処理 ===
     disable_raw_mode()?; // 端末を元に戻す
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?; // 元の画面に戻す
