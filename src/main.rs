@@ -20,8 +20,8 @@ use ratatui::{
 use rustfft::{num_complex::Complex, FftPlanner};
 
 const SAMPLE_RATE: usize = 44100; // サンプリングレート（未使用だが基準値として定義）
-const FFT_SIZE: usize = 512;      // FFTのサイズ（1フレームのサンプル数）
-const SPEC_WIDTH: usize = 200;    // スペクトログラムの横幅（時間方向のフレーム数）
+const FFT_SIZE: usize = 512; // FFTのサイズ（1フレームのサンプル数）
+const SPEC_WIDTH: usize = 200; // スペクトログラムの横幅（時間方向のフレーム数）
 
 fn main() -> anyhow::Result<()> {
     // === マイク入力デバイスの初期化 ===
@@ -29,7 +29,7 @@ fn main() -> anyhow::Result<()> {
     let device = host.default_input_device().expect("no input device"); // デフォルトの入力デバイス取得
     println!("使用デバイス: {}", device.name()?);
     let config = device.default_input_config()?; // 入力設定（サンプルレート・フォーマットなど）
-    let sample_rate = config.sample_rate().0 as usize;
+    let sample_rate = config.sample_rate().0 as f32;
 
     // === 音声データをスレッド間で渡すチャンネルを作成 ===
     let (tx, rx) = unbounded::<Vec<f32>>();
@@ -77,13 +77,13 @@ fn main() -> anyhow::Result<()> {
 
                 // スペクトログラム更新
                 let mut spec = spec_ref.lock().unwrap();
-                spec.pop();           // 一番右の列（古いデータ）を削除
+                spec.pop(); // 一番右の列（古いデータ）を削除
                 spec.insert(0, mags); // 左端に新しい列を追加（左→右に流れる表示にするなら逆に）
             }
         }
     });
 
-    // === TUI（テキストUI）描画処理 ===
+    // === TUI描画 ===
     enable_raw_mode()?; // 入力を即時処理するモードに切り替え
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)?; // 新しいスクリーンバッファへ
@@ -93,7 +93,6 @@ fn main() -> anyhow::Result<()> {
 
     // === メインループ（描画と入力処理） ===
     loop {
-        // qキーで終了
         if event::poll(Duration::from_millis(10))? {
             if let Event::Key(key) = event::read()? {
                 if key.code == KeyCode::Char('q') {
@@ -102,10 +101,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        // FFTスレッドで更新されたスペクトログラムを取得
         let spec = spectrogram.lock().unwrap().clone();
-
-        // === 画面描画 ===
         terminal.draw(|f| {
             let size = f.size();
             let block = Block::default()
@@ -117,10 +113,7 @@ fn main() -> anyhow::Result<()> {
             let width = inner.width.min(SPEC_WIDTH as u16) as usize;
             let height = inner.height as usize;
 
-            // 描画用の文字バッファを作成
             let mut buf = vec![vec![' '; width]; height];
-
-            // 各周波数成分の強度を文字に変換
             for (x, column) in spec.iter().rev().take(width).enumerate() {
                 for (y, &val) in column.iter().enumerate() {
                     let intensity = ((val * 10.0) as u8).min(9);
@@ -131,11 +124,18 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
-            // バッファを文字列に変換して描画
+            // === 周波数ラベルを生成 ===
+            // 上が高周波、下が低周波
+            let max_freq = sample_rate / 2.0; // ナイキスト周波数
             let mut text = String::new();
-            for row in buf {
-                text.push_str(&row.iter().collect::<String>());
-                text.push('\n');
+            for (i, row) in buf.iter().enumerate() {
+                let freq = max_freq * (1.0 - i as f32 / height as f32);
+                let label = if i % (height / 8).max(1) == 0 {
+                    format!("{:>5.0}Hz | ", freq)
+                } else {
+                    "        | ".to_string()
+                };
+                text.push_str(&format!("{}{}\n", label, row.iter().collect::<String>()));
             }
 
             use ratatui::text::Text;
