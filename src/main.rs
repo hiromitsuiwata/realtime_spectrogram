@@ -19,69 +19,81 @@ use ratatui::{
 };
 use rustfft::{num_complex::Complex, FftPlanner};
 
-const SAMPLE_RATE: usize = 44100;
-const FFT_SIZE: usize = 512;
-const SPEC_WIDTH: usize = 200; // 横方向の時間フレーム数
+const SAMPLE_RATE: usize = 44100; // サンプリングレート（未使用だが基準値として定義）
+const FFT_SIZE: usize = 512;      // FFTのサイズ（1フレームのサンプル数）
+const SPEC_WIDTH: usize = 200;    // スペクトログラムの横幅（時間方向のフレーム数）
 
 fn main() -> anyhow::Result<()> {
-    // === マイク初期化 ===
-    let host = cpal::default_host();
-    let device = host.default_input_device().expect("no input device");
+    // === マイク入力デバイスの初期化 ===
+    let host = cpal::default_host(); // ホスト（OS依存のオーディオドライバ管理）
+    let device = host.default_input_device().expect("no input device"); // デフォルトの入力デバイス取得
     println!("使用デバイス: {}", device.name()?);
-    let config = device.default_input_config()?;
+    let config = device.default_input_config()?; // 入力設定（サンプルレート・フォーマットなど）
     let sample_rate = config.sample_rate().0 as usize;
 
+    // === 音声データをスレッド間で渡すチャンネルを作成 ===
     let (tx, rx) = unbounded::<Vec<f32>>();
 
-    // ストリーム構築
+    // === ストリームの構築（サンプル形式に応じて） ===
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => build_stream::<f32>(&device, &config.into(), tx.clone())?,
         cpal::SampleFormat::I16 => build_stream::<i16>(&device, &config.into(), tx.clone())?,
         cpal::SampleFormat::U16 => build_stream::<u16>(&device, &config.into(), tx.clone())?,
         _ => panic!("unsupported format"),
     };
-    stream.play()?;
+    stream.play()?; // マイク入力を開始
 
-    // === スペクトログラムデータ共有 ===
+    // === スペクトログラムデータを共有するための構造 ===
+    // 2次元配列 [時間][周波数] を保持する
+    // Arc + Mutexで複数スレッドから安全にアクセスできるようにする
     let spectrogram = Arc::new(Mutex::new(vec![vec![0.0; FFT_SIZE / 2]; SPEC_WIDTH]));
     let spec_ref = Arc::clone(&spectrogram);
 
     // === FFTスレッド ===
+    // 音声データを受信してリアルタイムにFFTを計算し、結果をスペクトログラムに保存する
     thread::spawn(move || {
         let mut planner = FftPlanner::new();
-        let fft = planner.plan_fft_forward(FFT_SIZE);
+        let fft = planner.plan_fft_forward(FFT_SIZE); // FFT計算器を準備
         let mut buffer = Vec::<f32>::new();
+
         for chunk in rx {
-            buffer.extend(chunk);
+            buffer.extend(chunk); // 新しい音声データを追加
             while buffer.len() >= FFT_SIZE {
+                // FFT_SIZE分のデータが溜まったら1フレーム処理
                 let frame: Vec<f32> = buffer.drain(..FFT_SIZE).collect();
+
+                // 複素数に変換してFFT実行
                 let mut input: Vec<Complex<f32>> = frame
                     .into_iter()
                     .map(|x| Complex { re: x, im: 0.0 })
                     .collect();
                 fft.process(&mut input);
+
+                // FFT結果を振幅スペクトルに変換（対数スケールで強度を求める）
                 let mags: Vec<f32> = input[..FFT_SIZE / 2]
                     .iter()
                     .map(|c| (c.norm() / (FFT_SIZE as f32)).log10().max(-2.0) + 2.0)
                     .collect();
-                let mut spec = spec_ref.lock().unwrap();
 
-                spec.pop();
-                spec.insert(0, mags);
+                // スペクトログラム更新
+                let mut spec = spec_ref.lock().unwrap();
+                spec.pop();           // 一番右の列（古いデータ）を削除
+                spec.insert(0, mags); // 左端に新しい列を追加（左→右に流れる表示にするなら逆に）
             }
         }
     });
 
-    // === TUI描画 ===
-    enable_raw_mode()?;
+    // === TUI（テキストUI）描画処理 ===
+    enable_raw_mode()?; // 入力を即時処理するモードに切り替え
     let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen)?; // 新しいスクリーンバッファへ
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
+    // === メインループ（描画と入力処理） ===
     loop {
-        // 終了判定
+        // qキーで終了
         if event::poll(Duration::from_millis(10))? {
             if let Event::Key(key) = event::read()? {
                 if key.code == KeyCode::Char('q') {
@@ -90,7 +102,10 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        // FFTスレッドで更新されたスペクトログラムを取得
         let spec = spectrogram.lock().unwrap().clone();
+
+        // === 画面描画 ===
         terminal.draw(|f| {
             let size = f.size();
             let block = Block::default()
@@ -102,7 +117,10 @@ fn main() -> anyhow::Result<()> {
             let width = inner.width.min(SPEC_WIDTH as u16) as usize;
             let height = inner.height as usize;
 
+            // 描画用の文字バッファを作成
             let mut buf = vec![vec![' '; width]; height];
+
+            // 各周波数成分の強度を文字に変換
             for (x, column) in spec.iter().rev().take(width).enumerate() {
                 for (y, &val) in column.iter().enumerate() {
                     let intensity = ((val * 10.0) as u8).min(9);
@@ -113,6 +131,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
+            // バッファを文字列に変換して描画
             let mut text = String::new();
             for row in buf {
                 text.push_str(&row.iter().collect::<String>());
@@ -127,13 +146,15 @@ fn main() -> anyhow::Result<()> {
         })?;
     }
 
-    // 終了処理
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    // === 終了処理 ===
+    disable_raw_mode()?; // 端末を元に戻す
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?; // 元の画面に戻す
+    terminal.show_cursor()?; // カーソル再表示
     Ok(())
 }
 
+// === 音声ストリーム構築関数 ===
+// CPALを使ってマイク入力を受け取り、サンプルをf32へ変換して送信する
 fn build_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -144,12 +165,15 @@ where
 {
     let err_fn = |err| eprintln!("Stream error: {}", err);
     let channels = config.channels as usize;
+
     let stream = device.build_input_stream(
         config,
         move |data: &[T], _| {
+            // サンプルをf32に変換（0.0〜1.0）
             let buffer: Vec<f32> = data.iter().map(|s| s.to_f32().unwrap_or(0.0)).collect();
+            // ステレオなど複数チャンネルの場合、左チャンネルのみ使用
             let mono: Vec<f32> = buffer.chunks(channels).map(|c| c[0]).collect();
-            sender.send(mono).ok();
+            sender.send(mono).ok(); // FFTスレッドへ送信
         },
         err_fn,
         None,
