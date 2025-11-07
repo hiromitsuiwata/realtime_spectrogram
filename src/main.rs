@@ -121,7 +121,7 @@ fn main() -> anyhow::Result<()> {
 
         // 描画
         terminal.draw(|f| {
-            let size = f.size();
+            let size = f.area();
             let block = Block::default()
                 .borders(Borders::ALL)
                 .title("Spectrogram (press 'q' to quit, log scale)");
