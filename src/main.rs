@@ -14,6 +14,10 @@ use std::sync::{Arc, Mutex};
 use crate::ui::cli::run_ui;
 
 fn main() -> anyhow::Result<()> {
+    // コマンドライン引数でUIモードを選択
+    let args: Vec<String> = std::env::args().collect();
+    let use_gui = args.iter().any(|a| a == "--gui");
+
     // === 音声デバイス初期化 ===
     let host = cpal::default_host();
     let device = host.default_input_device().expect("no input device");
@@ -41,5 +45,11 @@ fn main() -> anyhow::Result<()> {
     start_fft_thread(rx, Arc::clone(&spectrogram));
 
     // === UI起動 ===
-    run_ui(sample_rate, spectrogram)
+    if use_gui {
+        println!("GUIモードで起動します。");
+        Ok(())
+    } else {
+        println!("CLIモードで起動します。");
+        run_ui(sample_rate, spectrogram)
+    }
 }
