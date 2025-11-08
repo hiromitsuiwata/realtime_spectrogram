@@ -31,16 +31,15 @@ impl eframe::App for SpectrogramApp {
         let pixels = vec![Color32::BLACK; width * height];
         let mut image = egui::ColorImage::new([width, height], pixels);
 
-        let f_min: f32 = 20.0; // 最低周波
-        let f_max = self.sample_rate / 2.0; // ナイキスト周波数
+        let f_min: f32 = 20.0;
+        let f_max = self.sample_rate / 2.0;
         let log_min = f_min.log10();
         let log_max = f_max.log10();
 
         for x in 0..width {
-            let rev_x = width - 1 - x; // 左右反転用のインデックス
+            let rev_x = width - 1 - x; // 左右反転
             for y in 0..height {
-                // yを対数スケールに変換してFFTインデックスに
-                let frac = 1.0 - (y as f32 / height as f32); // 上が高周波
+                let frac = 1.0 - (y as f32 / height as f32);
                 let freq = 10f32.powf(log_min + frac * (log_max - log_min));
                 let fft_index = ((freq / f_max) * (FFT_SIZE as f32 / 2.0)).round() as usize;
 
@@ -55,13 +54,21 @@ impl eframe::App for SpectrogramApp {
             }
         }
 
-        let texture = ctx.load_texture("spectrogram", image, egui::TextureOptions::NEAREST);
+        // 🟢 最初だけロードして、以降は更新
+        if let Some(texture) = self.texture.as_mut() {
+            texture.set(image, egui::TextureOptions::NEAREST);
+        } else {
+            self.texture =
+                Some(ctx.load_texture("spectrogram", image, egui::TextureOptions::NEAREST));
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.image((texture.id(), ui.available_size()));
+            if let Some(texture) = &self.texture {
+                ui.image((texture.id(), ui.available_size()));
+            }
         });
 
-        ctx.request_repaint(); // 常に更新
+        ctx.request_repaint();
     }
 }
 
