@@ -11,8 +11,6 @@ use crossbeam_channel::unbounded;
 use fft_worker::start_fft_thread;
 use std::sync::{Arc, Mutex};
 
-use crate::ui::cli::run_ui;
-
 fn main() -> anyhow::Result<()> {
     // コマンドライン引数でUIモードを選択
     let args: Vec<String> = std::env::args().collect();
@@ -47,9 +45,9 @@ fn main() -> anyhow::Result<()> {
     // === UI起動 ===
     if use_gui {
         println!("GUIモードで起動します。");
-        Ok(())
+        ui::gui::run_ui(sample_rate, spectrogram)
     } else {
         println!("CLIモードで起動します。");
-        run_ui(sample_rate, spectrogram)
+        ui::cli::run_ui(sample_rate, spectrogram)
     }
 }
