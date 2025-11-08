@@ -11,7 +11,8 @@ ratatui = "0.29"
 crossterm = "0.29"
 anyhow = "1.0"
 num-traits = "0.2"
-
+eframe = "0.27"
+egui = "0.27"
 
 [[bin]]
 name = "list_devices"

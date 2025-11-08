@@ -10,7 +10,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::unbounded;
 use fft_worker::start_fft_thread;
 use std::sync::{Arc, Mutex};
-use ui::run_ui;
+
+use crate::ui::cli::run_ui;
 
 fn main() -> anyhow::Result<()> {
     // === 音声デバイス初期化 ===
@@ -24,6 +25,7 @@ fn main() -> anyhow::Result<()> {
     let (tx, rx) = unbounded::<Vec<f32>>();
 
     // === ストリーム構築 ===
+    println!("サンプルフォーマット: {:?}", config.sample_format());
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => build_input_stream::<f32>(&device, &config.into(), tx.clone())?,
         cpal::SampleFormat::I16 => build_input_stream::<i16>(&device, &config.into(), tx.clone())?,
